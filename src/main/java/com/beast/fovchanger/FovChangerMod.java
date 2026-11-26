@@ -1,635 +1,197 @@
-package com.beast.fovchanger;
+package com.beast.hitparticles;
 
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.entity.AbstractClientPlayer;
-import net.minecraft.client.gui.GuiButton;
-import net.minecraft.client.gui.GuiScreen;
-import net.minecraft.client.renderer.GlStateManager;
-import net.minecraft.client.settings.KeyBinding;
+import net.minecraft.client.particle.EffectRenderer;
+import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.ICommandSender;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.init.Items;
-import net.minecraft.item.ItemStack;
-import net.minecraft.potion.Potion;
-import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.EnumParticleTypes;
+import net.minecraft.world.World;
 import net.minecraftforge.client.ClientCommandHandler;
-import net.minecraftforge.client.event.FOVUpdateEvent;
 import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.fml.client.registry.ClientRegistry;
+import net.minecraftforge.event.entity.player.AttackEntityEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.Mod.EventHandler;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
-import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
-import org.lwjgl.input.Keyboard;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.List;
+import java.util.Properties;
 
 /**
- * FOV Changer Plus - mod de FOV estilo Badlion para Forge 1.8.9 (client-side).
- * Menu padrao do Minecraft (botoes e sliders vanilla).
+ * HitParticles - client-side, Forge 1.8.9.
  *
- * Abrir o menu: tecla K (mude em Opcoes > Controles) ou /fov
+ * Comportamento: as particulas de hit (critico e sharpness) aparecem normalmente pelos primeiros
+ * hits, depois somem por alguns segundos e voltam sozinhas. Nada alem disso e alterado.
+ *
+ * Comando: /hitparticles [toggle | hits <n> | time <segundos>]
  */
-@Mod(modid = "fovchangerplus", name = "FOV Changer Plus", version = "1.2", clientSideOnly = true)
-public class FovChangerMod {
-
-    // ==================== TIPOS DE TRANSICAO ====================
-    public static final int TYPE_OLD = 0;      // muda na hora
-    public static final int TYPE_SMOOTH = 1;   // transicao suave (por frame)
-    public static final int TYPE_VANILLA = 2;  // transicao igual ao vanilla (por tick)
-    private static final String[] TYPE_NAMES = { "Old", "Smooth", "Vanilla" };
-
-    // Vanilla aproxima 50% por tick (20 tps): k = -ln(0.5) * 20 ~= 13.86 por segundo.
-    // Por isso o padrao do Smooth e 14 (igual ao ritmo do jogo original).
-    public static final int DEFAULT_SMOOTH = 14;
+@Mod(modid = "hitparticles", name = "HitParticles", version = "1.0", clientSideOnly = true)
+public class HitParticlesMod {
 
     // ==================== CONFIGURACOES ====================
     public static boolean enabled = true;
-    public static int normalFov = 70;
-    public static int sprintFov = 80;
-    public static int speed1Fov = 77;
-    public static int speed2Fov = 84;
-    public static int slowFov = 65;
-    public static boolean dynamicSprint = true;
-    public static boolean dynamicBow = true;
-    public static boolean dynamicEffect = true;
-    public static int transition = TYPE_VANILLA;
-    public static int smoothSpeed = DEFAULT_SMOOTH;
+    public static int hitsBeforeHide = 5;      // quantos hits mostram particula antes de sumir
+    public static long hideMs = 3000L;         // quanto tempo ficam sumidas
+    private static final long RESET_MS = 3000L; // sem bater por esse tempo zera a contagem
 
-    // chaves dos sliders
-    private static final int K_NORMAL = 0;
-    private static final int K_SPRINT = 1;
-    private static final int K_SPEED1 = 2;
-    private static final int K_SPEED2 = 3;
-    private static final int K_SLOW = 4;
-    private static final int K_SMOOTH = 5;
+    // ==================== ESTADO ====================
+    private static int hitCount = 0;
+    private static long lastHitMs = 0L;
+    private static long hiddenUntil = 0L;
 
-    static int get(int key) {
-        switch (key) {
-            case K_NORMAL: return normalFov;
-            case K_SPRINT: return sprintFov;
-            case K_SPEED1: return speed1Fov;
-            case K_SPEED2: return speed2Fov;
-            case K_SLOW: return slowFov;
-            default: return smoothSpeed;
-        }
-    }
-
-    static void set(int key, int v) {
-        switch (key) {
-            case K_NORMAL: normalFov = v; break;
-            case K_SPRINT: sprintFov = v; break;
-            case K_SPEED1: speed1Fov = v; break;
-            case K_SPEED2: speed2Fov = v; break;
-            case K_SLOW: slowFov = v; break;
-            default: smoothSpeed = v; break;
-        }
-    }
-
-    static int min(int key) { return key == K_SMOOTH ? 1 : 30; }
-    static int max(int key) { return key == K_SMOOTH ? 40 : 110; }
-
-    // Reset de um slider: volta pro FOV base (Normal). O Normal volta pra 70.
-    static void resetOne(int key) {
-        if (key == K_NORMAL) normalFov = 70;
-        else if (key == K_SMOOTH) smoothSpeed = DEFAULT_SMOOTH;
-        else set(key, normalFov);
-    }
-
-    static void resetAll() {
-        normalFov = 70;
-        sprintFov = 80;
-        speed1Fov = 77;
-        speed2Fov = 84;
-        slowFov = 65;
-        dynamicSprint = true;
-        dynamicBow = true;
-        dynamicEffect = true;
-        transition = TYPE_VANILLA;
-        smoothSpeed = DEFAULT_SMOOTH;
-    }
-
-    // ==================== ESTADO INTERNO ====================
     private final Minecraft mc = Minecraft.getMinecraft();
-    public static KeyBinding openGuiKey;
-    private static boolean openGuiNextTick = false;
-
-    // Ultimo multiplicador (sem o arco) calculado a partir do FOVUpdateEvent do proprio jogo.
-    private float eventRatio = 1.0F;
-    private boolean eventValid = false;
-
-    private float smoothFov = -1.0F;    // usado no modo Smooth
-    private long lastNs = 0L;
-
-    private float savedFov = 70.0F;
-    private boolean overridden = false;
+    private boolean installed = false;
 
     @EventHandler
     public void init(FMLInitializationEvent event) {
-        MinecraftForge.EVENT_BUS.register(this);
-        ClientCommandHandler.instance.registerCommand(new FovCommand());
-
-        openGuiKey = new KeyBinding("FOV Changer Menu", Keyboard.KEY_K, "key.categories.misc");
-        ClientRegistry.registerKeyBinding(openGuiKey);
-
-        initConfig();
         loadSettings();
+        MinecraftForge.EVENT_BUS.register(this);
+        ClientCommandHandler.instance.registerCommand(new HitCommand());
     }
 
-    // ==================== MODELO DO VANILLA ====================
-    // No Minecraft 1.8.9:
-    //   FOV final = fovSetting * modificador
-    //   modificador = (velocidade / velocidadeBase + 1) / 2     (x1.1 voando, x(1 - 15% * zoom) com arco)
-    //   velocidade  = produto dos modificadores: Speed +20%/nivel, Slowness -15%/nivel, sprint +30%
-    // O jogo faz o lerp (50% por tick) e a interpolacao por partialTicks desse modificador.
-    // O mod NAO recalcula isso do zero: ele pega o valor REAL do jogo (FOVUpdateEvent) e so troca
-    // os valores de FOV de cada estado, mantendo tudo que o vanilla faz (voar, arco, outros mods
-    // que mexem na velocidade, agua, morte, etc).
-
-    // Velocidade esperada pelo vanilla com base no estado atual (efeitos + sprint).
-    private static float vanillaExpectedMod(EntityPlayer p) {
-        float r = 1.0F;
-        PotionEffect speed = p.getActivePotionEffect(Potion.moveSpeed);
-        PotionEffect slow = p.getActivePotionEffect(Potion.moveSlowdown);
-        if (speed != null) r *= 1.0F + 0.2F * (speed.getAmplifier() + 1);
-        if (slow != null) r *= 1.0F - 0.15F * (slow.getAmplifier() + 1);
-        if (p.isSprinting()) r *= 1.3F;
-        if (r < 0.0F) r = 0.0F;
-        return (r + 1.0F) / 2.0F;
-    }
-
-    // Fator do arco (ate -15%). partial = 0 no tick (igual ao vanilla), partialTicks no frame.
-    private static float bowFactor(EntityPlayer p, float partial) {
-        if (p.isUsingItem()) {
-            ItemStack inUse = p.getItemInUse();
-            if (inUse != null && inUse.getItem() == Items.bow) {
-                float f = (p.getItemInUseDuration() + partial) / 20.0F;
-                f = f > 1.0F ? 1.0F : f * f;
-                return 1.0F - f * 0.15F;
-            }
-        }
-        return 1.0F;
-    }
-
-    // Converte "FOV quando SO esse estado esta ativo" na velocidade equivalente do vanilla.
-    // Se FOV == Normal da 1.0 (sem mudanca).
-    private static float customR(int fov) {
-        float r = 2.0F * fov / (float) normalFov - 1.0F;
-        return r < 0.0F ? 0.0F : r;
-    }
-
-    // Modificador com os FOVs escolhidos. Os estados se combinam como no jogo (multiplicando).
-    private static float customMod(EntityPlayer p) {
-        float r = 1.0F;
-        if (dynamicEffect) {
-            PotionEffect speed = p.getActivePotionEffect(Potion.moveSpeed);
-            PotionEffect slow = p.getActivePotionEffect(Potion.moveSlowdown);
-            if (speed != null) {
-                int a = speed.getAmplifier();
-                if (a >= 1) r *= customR(speed2Fov) * (1.0F + 0.2F * (a + 1)) / 1.4F;
-                else r *= customR(speed1Fov);
-            }
-            if (slow != null) {
-                int a = slow.getAmplifier();
-                float k = a >= 1 ? Math.max(0.0F, 1.0F - 0.15F * (a + 1)) / 0.85F : 1.0F;
-                r *= customR(slowFov) * k;
-            }
-        }
-        if (dynamicSprint && p.isSprinting()) {
-            r *= customR(sprintFov);
-        }
-        return (r + 1.0F) / 2.0F;
-    }
-
-    // Multiplicador final (sem arco). vanillaNoBow = modificador real do jogo sem o arco
-    // (ou <= 0 se nao tiver, ai usa so o modelo).
-    // O "residual" e tudo que o vanilla aplica alem do modelo (voar, atributos de outros mods...).
-    private static float ratioNoBow(EntityPlayer p, float vanillaNoBow) {
-        float residual = 1.0F;
-        if (vanillaNoBow > 0.0F && p.capabilities.getWalkSpeed() > 0.0F) {
-            residual = vanillaNoBow / vanillaExpectedMod(p);
-            if (Float.isNaN(residual) || Float.isInfinite(residual)) residual = 1.0F;
-        }
-        return customMod(p) * residual;
-    }
-
-    private EntityPlayer viewPlayer() {
-        Entity e = mc.getRenderViewEntity();
-        return e instanceof EntityPlayer ? (EntityPlayer) e : mc.thePlayer;
-    }
-
-    // ==================== TICKS ====================
+    // Troca o EffectRenderer do jogo por uma versao que filtra so as particulas de hit.
+    // (feito 1x, no primeiro tick, quando o jogo ja terminou de carregar)
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
-
-        // abrir o menu (o comando so pode abrir 1 tick depois, senao o chat fecha ele)
-        while (openGuiKey.isPressed()) {
-            openGuiNextTick = true;
-        }
-        if (openGuiNextTick) {
-            openGuiNextTick = false;
-            mc.displayGuiScreen(new FovScreen(null));
-        }
-
-        if (!enabled || mc.thePlayer == null || mc.theWorld == null) {
-            eventValid = false;
-            smoothFov = -1.0F;
-            lastNs = 0L;
-        }
+        if (event.phase != TickEvent.Phase.END || installed) return;
+        if (mc.effectRenderer == null) return;
+        mc.effectRenderer = new HitEffectRenderer(mc.theWorld, mc.getTextureManager());
+        installed = true;
     }
 
-    // Chamado pelo proprio jogo 1x por tick (EntityRenderer.updateFovModifierHand).
-    // event.fov = modificador REAL do vanilla (sprint, speed, slowness, voo, arco, atributos).
-    @SubscribeEvent(priority = EventPriority.LOWEST)
-    public void onFovUpdate(FOVUpdateEvent event) {
-        if (!enabled) return;
-
-        EntityPlayer p = event.entity;
-        float bow = bowFactor(p, 0.0F);
-        eventRatio = ratioNoBow(p, event.fov / bow);
-        eventValid = true;
-
-        if (transition == TYPE_VANILLA) {
-            // Modo Vanilla: devolve o modificador pro jogo, que faz o lerp e a interpolacao sozinho.
-            float m = eventRatio * (dynamicBow ? bow : 1.0F);
-            if (m < 0.1F) m = 0.1F;   // limites do proprio vanilla
-            if (m > 1.5F) m = 1.5F;
-            event.newfov = m;
-        } else {
-            // Old / Smooth: o mod controla a transicao por frame, entao zera o do vanilla.
-            event.newfov = 1.0F;
-        }
-    }
-
-    // Antes de cada frame: coloca o FOV base no lugar do fovSetting do jogo.
-    // Depois do frame: devolve o valor original (assim o options.txt nao e alterado).
+    // Conta os SEUS hits. O evento e disparado antes das particulas serem criadas,
+    // entao o hit que ativa o "sumir" ja nasce sem particula.
     @SubscribeEvent
-    public void onRenderTick(TickEvent.RenderTickEvent event) {
-        if (event.phase == TickEvent.Phase.START) {
-            // seguranca: se o END nao rodou (erro no frame), restaura antes de guardar de novo
-            if (overridden) {
-                mc.gameSettings.fovSetting = savedFov;
-                overridden = false;
+    public void onAttack(AttackEntityEvent event) {
+        if (!enabled || event.entityPlayer != mc.thePlayer) return;
+
+        long now = System.currentTimeMillis();
+        if (now < hiddenUntil) return;                 // ja esta no periodo sumido
+        if (hiddenUntil != 0L) {                       // o periodo sumido acabou: recomeça
+            hiddenUntil = 0L;
+            hitCount = 0;
+        }
+        if (now - lastHitMs > RESET_MS) hitCount = 0;  // ficou um tempo sem bater
+        lastHitMs = now;
+
+        if (hitCount >= hitsBeforeHide) {
+            hiddenUntil = now + hideMs;                // some
+            hitCount = 0;
+        } else {
+            hitCount++;
+        }
+    }
+
+    // ==================== EFFECT RENDERER ====================
+    // Critico (CRIT) e sharpness (CRIT_MAGIC) sao criados por emitParticleAtEntity,
+    // tanto nos seus hits quanto nos de outros jogadores (pacote do servidor).
+    public static class HitEffectRenderer extends EffectRenderer {
+        public HitEffectRenderer(World world, TextureManager textures) {
+            super(world, textures);
+        }
+
+        @Override
+        public void emitParticleAtEntity(Entity entity, EnumParticleTypes type) {
+            if (enabled
+                && (type == EnumParticleTypes.CRIT || type == EnumParticleTypes.CRIT_MAGIC)
+                && System.currentTimeMillis() < hiddenUntil) {
+                return; // particula escondida
             }
-            if (!enabled || mc.thePlayer == null || mc.theWorld == null) {
-                smoothFov = -1.0F;
-                lastNs = 0L;
-                return;
-            }
-
-            float value;
-            if (transition == TYPE_VANILLA) {
-                // o jogo multiplica fovSetting pelo modificador (que ja vem do evento)
-                smoothFov = -1.0F;
-                lastNs = 0L;
-                value = normalFov;
-            } else {
-                EntityPlayer p = viewPlayer();
-                boolean useEvent = eventValid && mc.getRenderViewEntity() instanceof AbstractClientPlayer;
-                float ratio = useEvent ? eventRatio : ratioNoBow(p, -1.0F);
-                float target = normalFov * ratio;
-
-                long now = System.nanoTime();
-                float dt = lastNs == 0L ? 0.0F : (now - lastNs) / 1.0E9F;
-                lastNs = now;
-                if (dt > 0.1F) dt = 0.1F;
-
-                float base;
-                if (transition == TYPE_OLD) {
-                    base = target;
-                } else {
-                    if (smoothFov < 0.0F) smoothFov = target;
-                    base = smoothFov + (target - smoothFov) * (1.0F - (float) Math.exp(-smoothSpeed * dt));
-                }
-                smoothFov = base;
-
-                value = base * (dynamicBow ? bowFactor(p, event.renderTickTime) : 1.0F);
-            }
-
-            if (value < 10.0F) value = 10.0F;
-            if (value > 170.0F) value = 170.0F;
-
-            savedFov = mc.gameSettings.fovSetting;
-            mc.gameSettings.fovSetting = value;
-            overridden = true;
-        } else if (overridden) {
-            mc.gameSettings.fovSetting = savedFov;
-            overridden = false;
+            super.emitParticleAtEntity(entity, type);
         }
     }
 
     // ==================== CONFIG ====================
-    private static File configFile;
+    private static File cfgFile;
 
-    private static void initConfig() {
-        File dir = new File(Minecraft.getMinecraft().mcDataDir, "fovchanger");
-        if (!dir.exists()) dir.mkdirs();
-        configFile = new File(dir, "settings.cfg");
-    }
-
-    private static int clampInt(String value, int min, int max, int def) {
+    private static int parseInt(String v, int min, int max, int def) {
         try {
-            int v = Integer.parseInt(value.trim());
-            return Math.max(min, Math.min(max, v));
-        } catch (NumberFormatException e) {
+            return Math.max(min, Math.min(max, Integer.parseInt(v.trim())));
+        } catch (Exception e) {
             return def;
         }
     }
 
     private static void loadSettings() {
-        if (configFile == null || !configFile.exists()) {
-            saveSettings();
-            return;
-        }
-        try (BufferedReader reader = new BufferedReader(new FileReader(configFile))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                String[] parts = line.split("=", 2);
-                if (parts.length != 2) continue;
-                String key = parts[0].trim();
-                String value = parts[1].trim();
-                switch (key) {
-                    case "enabled": enabled = Boolean.parseBoolean(value); break;
-                    case "normalFov": normalFov = clampInt(value, 30, 110, 70); break;
-                    case "sprintFov": sprintFov = clampInt(value, 30, 110, 80); break;
-                    case "speed1Fov": speed1Fov = clampInt(value, 30, 110, 77); break;
-                    case "speed2Fov": speed2Fov = clampInt(value, 30, 110, 84); break;
-                    case "slowFov": slowFov = clampInt(value, 30, 110, 65); break;
-                    case "dynamicSprint": dynamicSprint = Boolean.parseBoolean(value); break;
-                    case "dynamicBow": dynamicBow = Boolean.parseBoolean(value); break;
-                    case "dynamicEffect": dynamicEffect = Boolean.parseBoolean(value); break;
-                    case "transition": transition = clampInt(value, 0, 2, TYPE_VANILLA); break;
-                    case "smoothSpeed": smoothSpeed = clampInt(value, 1, 40, DEFAULT_SMOOTH); break;
-                }
+        try {
+            File dir = new File(Minecraft.getMinecraft().mcDataDir, "config");
+            if (!dir.exists()) dir.mkdirs();
+            cfgFile = new File(dir, "hitparticles.properties");
+            if (!cfgFile.exists()) {
+                saveSettings();
+                return;
             }
+            Properties p = new Properties();
+            try (FileReader r = new FileReader(cfgFile)) {
+                p.load(r);
+            }
+            enabled = Boolean.parseBoolean(p.getProperty("enabled", "true"));
+            hitsBeforeHide = parseInt(p.getProperty("hits", "5"), 1, 50, 5);
+            hideMs = parseInt(p.getProperty("timeMs", "3000"), 500, 30000, 3000);
         } catch (Exception e) {
-            System.err.println("[FOVChanger] Load failed: " + e.getMessage());
+            System.err.println("[HitParticles] Load failed: " + e.getMessage());
         }
     }
 
-    public static void saveSettings() {
-        if (configFile == null) {
-            try {
-                initConfig();
-            } catch (Exception e) {
-                return;
-            }
-        }
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(configFile))) {
-            writer.write("# FOV Changer Plus Config\n");
-            writer.write("enabled=" + enabled + "\n");
-            writer.write("normalFov=" + normalFov + "\n");
-            writer.write("sprintFov=" + sprintFov + "\n");
-            writer.write("speed1Fov=" + speed1Fov + "\n");
-            writer.write("speed2Fov=" + speed2Fov + "\n");
-            writer.write("slowFov=" + slowFov + "\n");
-            writer.write("dynamicSprint=" + dynamicSprint + "\n");
-            writer.write("dynamicBow=" + dynamicBow + "\n");
-            writer.write("dynamicEffect=" + dynamicEffect + "\n");
-            writer.write("transition=" + transition + "\n");
-            writer.write("smoothSpeed=" + smoothSpeed + "\n");
-            writer.flush();
+    private static void saveSettings() {
+        if (cfgFile == null) return;
+        try (FileWriter w = new FileWriter(cfgFile)) {
+            Properties p = new Properties();
+            p.setProperty("enabled", String.valueOf(enabled));
+            p.setProperty("hits", String.valueOf(hitsBeforeHide));
+            p.setProperty("timeMs", String.valueOf(hideMs));
+            p.store(w, "HitParticles Config");
         } catch (Exception e) {
             // ignora
         }
     }
 
     // ==================== COMANDO ====================
-    public static class FovCommand extends CommandBase {
-        @Override public String getCommandName() { return "fov"; }
-        @Override public String getCommandUsage(ICommandSender s) { return "/fov [toggle|reset]"; }
-        @Override public List<String> getCommandAliases() { return Arrays.asList("fovchanger"); }
+    public static class HitCommand extends CommandBase {
+        @Override public String getCommandName() { return "hitparticles"; }
+        @Override public String getCommandUsage(ICommandSender s) { return "/hitparticles [toggle|hits <n>|time <segundos>]"; }
         @Override public boolean canCommandSenderUseCommand(ICommandSender s) { return true; }
+
+        private void say(ICommandSender s, String msg) {
+            s.addChatMessage(new ChatComponentText("[HitParticles] " + msg));
+        }
 
         @Override
         public void processCommand(ICommandSender sender, String[] args) {
             if (args.length == 0) {
-                openGuiNextTick = true;
+                say(sender, (enabled ? "ON" : "OFF") + " | hits: " + hitsBeforeHide
+                    + " | time: " + (hideMs / 1000.0) + "s");
                 return;
             }
             String cmd = args[0].toLowerCase();
             if ("toggle".equals(cmd)) {
                 enabled = !enabled;
-                sender.addChatMessage(new ChatComponentText("[FOV Changer] " + (enabled ? "ON" : "OFF")));
-                saveSettings();
-            } else if ("reset".equals(cmd)) {
-                resetAll();
-                sender.addChatMessage(new ChatComponentText("[FOV Changer] Settings reset"));
-                saveSettings();
+                hiddenUntil = 0L;
+                hitCount = 0;
+                say(sender, enabled ? "ON" : "OFF");
+            } else if ("hits".equals(cmd) && args.length > 1) {
+                hitsBeforeHide = parseInt(args[1], 1, 50, hitsBeforeHide);
+                say(sender, "hits: " + hitsBeforeHide);
+            } else if ("time".equals(cmd) && args.length > 1) {
+                try {
+                    double sec = Double.parseDouble(args[1].replace(',', '.'));
+                    hideMs = (long) Math.max(500, Math.min(30000, sec * 1000.0));
+                    say(sender, "time: " + (hideMs / 1000.0) + "s");
+                } catch (NumberFormatException e) {
+                    say(sender, getCommandUsage(sender));
+                    return;
+                }
             } else {
-                sender.addChatMessage(new ChatComponentText("[FOV Changer] /fov, /fov toggle, /fov reset"));
-            }
-        }
-    }
-
-    // ==================== SLIDER ====================
-    public static class FovSlider extends GuiButton {
-        private final int key;
-        private final int minV;
-        private final int maxV;
-        private float value;
-        private boolean dragging = false;
-
-        private static final String[] LABELS = {
-            "Normal FOV", "Sprinting FOV", "Speed I FOV", "Speed II FOV", "Slowness FOV", "Smooth Speed"
-        };
-
-        public FovSlider(int id, int x, int y, int w, int key) {
-            super(id, x, y, w, 20, "");
-            this.key = key;
-            this.minV = min(key);
-            this.maxV = max(key);
-            sync();
-        }
-
-        public void sync() {
-            int v = get(key);
-            this.value = (v - minV) / (float) (maxV - minV);
-            this.displayString = text(v);
-        }
-
-        private String text(int v) {
-            String extra = "";
-            if (key != K_SMOOTH) {
-                if (v == 70) extra = " (Normal)";
-                else if (v == 110) extra = " (Quake Pro)";
-            } else if (v == DEFAULT_SMOOTH) {
-                extra = " (Vanilla)";
-            }
-            return LABELS[key] + ": " + v + extra;
-        }
-
-        private void updateFromMouse(int mouseX) {
-            float f = (float) (mouseX - (this.xPosition + 4)) / (float) (this.width - 8);
-            if (f < 0.0F) f = 0.0F;
-            if (f > 1.0F) f = 1.0F;
-            int v = Math.round(minV + f * (maxV - minV));
-            set(key, v);
-            sync();
-        }
-
-        @Override
-        protected int getHoverState(boolean mouseOver) {
-            return 0;
-        }
-
-        @Override
-        protected void mouseDragged(Minecraft mc, int mouseX, int mouseY) {
-            if (!this.visible) return;
-            if (this.dragging) {
-                updateFromMouse(mouseX);
-            }
-            mc.getTextureManager().bindTexture(buttonTextures);
-            GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
-            int knobX = this.xPosition + (int) (this.value * (float) (this.width - 8));
-            this.drawTexturedModalRect(knobX, this.yPosition, 0, 66, 4, 20);
-            this.drawTexturedModalRect(knobX + 4, this.yPosition, 196, 66, 4, 20);
-        }
-
-        @Override
-        public boolean mousePressed(Minecraft mc, int mouseX, int mouseY) {
-            if (super.mousePressed(mc, mouseX, mouseY)) {
-                updateFromMouse(mouseX);
-                this.dragging = true;
-                return true;
-            }
-            return false;
-        }
-
-        @Override
-        public void mouseReleased(int mouseX, int mouseY) {
-            if (this.dragging) {
-                this.dragging = false;
-                saveSettings();
-            }
-        }
-    }
-
-    // ==================== MENU ====================
-    public static class FovScreen extends GuiScreen {
-        private final GuiScreen parent;
-        private final FovSlider[] sliders = new FovSlider[6];
-        private GuiButton btnEnabled;
-        private GuiButton btnSprint;
-        private GuiButton btnBow;
-        private GuiButton btnEffect;
-        private GuiButton btnTransition;
-
-        public FovScreen(GuiScreen parent) {
-            this.parent = parent;
-        }
-
-        private static String onOff(boolean b) {
-            return b ? "\u00a7aON" : "\u00a7cOFF";
-        }
-
-        @Override
-        public void initGui() {
-            int leftX = this.width / 2 - 154;
-            int rightX = this.width / 2 + 4;
-            int y0 = 36;
-            int step = 24;
-
-            // coluna da esquerda: sliders de FOV + botao de reset (R)
-            for (int i = 0; i <= K_SLOW; i++) {
-                sliders[i] = new FovSlider(200 + i, leftX, y0 + i * step, 130, i);
-                this.buttonList.add(sliders[i]);
-                this.buttonList.add(new GuiButton(100 + i, leftX + 134, y0 + i * step, 20, 20, "R"));
-            }
-
-            // coluna da direita: opcoes
-            btnEnabled = new GuiButton(10, rightX, y0, 150, 20, "");
-            btnSprint = new GuiButton(11, rightX, y0 + step, 150, 20, "");
-            btnBow = new GuiButton(12, rightX, y0 + step * 2, 150, 20, "");
-            btnEffect = new GuiButton(13, rightX, y0 + step * 3, 150, 20, "");
-            btnTransition = new GuiButton(14, rightX, y0 + step * 4, 150, 20, "");
-            this.buttonList.add(btnEnabled);
-            this.buttonList.add(btnSprint);
-            this.buttonList.add(btnBow);
-            this.buttonList.add(btnEffect);
-            this.buttonList.add(btnTransition);
-
-            sliders[K_SMOOTH] = new FovSlider(200 + K_SMOOTH, rightX, y0 + step * 5, 130, K_SMOOTH);
-            this.buttonList.add(sliders[K_SMOOTH]);
-            this.buttonList.add(new GuiButton(100 + K_SMOOTH, rightX + 134, y0 + step * 5, 20, 20, "R"));
-
-            // rodape
-            this.buttonList.add(new GuiButton(20, leftX, this.height - 28, 150, 20, "Reset All"));
-            this.buttonList.add(new GuiButton(21, rightX, this.height - 28, 150, 20, "Done"));
-
-            refresh();
-        }
-
-        private void refresh() {
-            btnEnabled.displayString = "FOV Changer: " + onOff(enabled);
-            btnSprint.displayString = "Dynamic Sprint: " + onOff(dynamicSprint);
-            btnBow.displayString = "Dynamic Bow: " + onOff(dynamicBow);
-            btnEffect.displayString = "Dynamic Status Effect: " + onOff(dynamicEffect);
-            btnTransition.displayString = "Transition: " + TYPE_NAMES[transition];
-            for (FovSlider s : sliders) {
-                if (s != null) s.sync();
-            }
-            sliders[K_SMOOTH].enabled = (transition == TYPE_SMOOTH);
-        }
-
-        @Override
-        protected void actionPerformed(GuiButton b) throws IOException {
-            if (b.id == 10) enabled = !enabled;
-            else if (b.id == 11) dynamicSprint = !dynamicSprint;
-            else if (b.id == 12) dynamicBow = !dynamicBow;
-            else if (b.id == 13) dynamicEffect = !dynamicEffect;
-            else if (b.id == 14) transition = (transition + 1) % 3;
-            else if (b.id >= 100 && b.id <= 105) resetOne(b.id - 100);
-            else if (b.id == 20) resetAll();
-            else if (b.id == 21) {
-                saveSettings();
-                this.mc.displayGuiScreen(parent);
+                say(sender, getCommandUsage(sender));
                 return;
             }
-            refresh();
             saveSettings();
-        }
-
-        @Override
-        protected void keyTyped(char c, int code) throws IOException {
-            if (openGuiKey != null && code == openGuiKey.getKeyCode()) {
-                saveSettings();
-                this.mc.displayGuiScreen(parent);
-                return;
-            }
-            super.keyTyped(c, code);
-        }
-
-        @Override
-        public void drawScreen(int mouseX, int mouseY, float partialTicks) {
-            this.drawDefaultBackground();
-            this.drawCenteredString(this.fontRendererObj, "FOV Changer", this.width / 2, 14, 0xFFFFFF);
-            this.drawCenteredString(this.fontRendererObj, "R = reset to base FOV", this.width / 2, this.height - 42, 0xAAAAAA);
-            super.drawScreen(mouseX, mouseY, partialTicks);
-        }
-
-        @Override
-        public void onGuiClosed() {
-            saveSettings();
-        }
-
-        @Override
-        public boolean doesGuiPauseGame() {
-            return false;
         }
     }
 }
