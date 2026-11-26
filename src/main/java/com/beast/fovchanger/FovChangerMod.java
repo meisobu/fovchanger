@@ -2,8 +2,9 @@ package com.beast.fovchanger;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.AbstractClientPlayer;
-import net.minecraft.client.gui.Gui;
+import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.ICommandSender;
@@ -25,7 +26,6 @@ import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
-import org.lwjgl.input.Mouse;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -38,7 +38,7 @@ import java.util.List;
 
 /**
  * FOV Changer Plus - mod de FOV estilo Badlion para Forge 1.8.9 (client-side).
- * Menu no estilo Essential.
+ * Menu padrao do Minecraft (botoes e sliders vanilla).
  *
  * Abrir o menu: tecla K (mude em Opcoes > Controles) ou /fov
  */
@@ -436,261 +436,172 @@ public class FovChangerMod {
         }
     }
 
-    // ==================== MENU (estilo Essential) ====================
-    public static class FovScreen extends GuiScreen {
-        private static final int W = 340;
-        private static final int H = 226;
-        private static final int SW = 150; // largura dos sliders / coluna
-
-        private static final int ACCENT = 0xFF3EA6FF;
-        private static final int ACCENT_HOVER = 0xFF5BB6FF;
-        private static final int BORDER = 0xFF2A2A2A;
-        private static final int BG = 0xFF181818;
-        private static final int SEP = 0xFF262626;
-        private static final int TRACK = 0xFF2F2F2F;
-        private static final int TEXT = 0xFFE6E6E6;
-        private static final int TEXT_DIM = 0xFF9AA0A6;
-        private static final int TEXT_OFF = 0xFF5A5A5A;
+    // ==================== SLIDER ====================
+    public static class FovSlider extends GuiButton {
+        private final int key;
+        private final int minV;
+        private final int maxV;
+        private float value;
+        private boolean dragging = false;
 
         private static final String[] LABELS = {
             "Normal FOV", "Sprinting FOV", "Speed I FOV", "Speed II FOV", "Slowness FOV", "Smooth Speed"
         };
 
+        public FovSlider(int id, int x, int y, int w, int key) {
+            super(id, x, y, w, 20, "");
+            this.key = key;
+            this.minV = min(key);
+            this.maxV = max(key);
+            sync();
+        }
+
+        public void sync() {
+            int v = get(key);
+            this.value = (v - minV) / (float) (maxV - minV);
+            this.displayString = text(v);
+        }
+
+        private String text(int v) {
+            String extra = "";
+            if (key != K_SMOOTH) {
+                if (v == 70) extra = " (Normal)";
+                else if (v == 110) extra = " (Quake Pro)";
+            } else if (v == DEFAULT_SMOOTH) {
+                extra = " (Vanilla)";
+            }
+            return LABELS[key] + ": " + v + extra;
+        }
+
+        private void updateFromMouse(int mouseX) {
+            float f = (float) (mouseX - (this.xPosition + 4)) / (float) (this.width - 8);
+            if (f < 0.0F) f = 0.0F;
+            if (f > 1.0F) f = 1.0F;
+            int v = Math.round(minV + f * (maxV - minV));
+            set(key, v);
+            sync();
+        }
+
+        @Override
+        protected int getHoverState(boolean mouseOver) {
+            return 0;
+        }
+
+        @Override
+        protected void mouseDragged(Minecraft mc, int mouseX, int mouseY) {
+            if (!this.visible) return;
+            if (this.dragging) {
+                updateFromMouse(mouseX);
+            }
+            mc.getTextureManager().bindTexture(buttonTextures);
+            GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
+            int knobX = this.xPosition + (int) (this.value * (float) (this.width - 8));
+            this.drawTexturedModalRect(knobX, this.yPosition, 0, 66, 4, 20);
+            this.drawTexturedModalRect(knobX + 4, this.yPosition, 196, 66, 4, 20);
+        }
+
+        @Override
+        public boolean mousePressed(Minecraft mc, int mouseX, int mouseY) {
+            if (super.mousePressed(mc, mouseX, mouseY)) {
+                updateFromMouse(mouseX);
+                this.dragging = true;
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public void mouseReleased(int mouseX, int mouseY) {
+            if (this.dragging) {
+                this.dragging = false;
+                saveSettings();
+            }
+        }
+    }
+
+    // ==================== MENU ====================
+    public static class FovScreen extends GuiScreen {
         private final GuiScreen parent;
-        private int x0, y0;
-        private int dragging = -1;
-        private final float[] anim = new float[4]; // 0 = master, 1 = sprint, 2 = bow, 3 = effect
-        private long lastMs = 0L;
+        private final FovSlider[] sliders = new FovSlider[6];
+        private GuiButton btnEnabled;
+        private GuiButton btnSprint;
+        private GuiButton btnBow;
+        private GuiButton btnEffect;
+        private GuiButton btnTransition;
 
         public FovScreen(GuiScreen parent) {
             this.parent = parent;
         }
 
-        // ---------- desenho ----------
-        private static void rrect(int x, int y, int w, int h, int r, int c) {
-            r = Math.min(r, Math.min(w, h) / 2);
-            if (r <= 0) {
-                Gui.drawRect(x, y, x + w, y + h, c);
-                return;
-            }
-            for (int i = 0; i < r; i++) {
-                double dy = r - i - 0.5;
-                int inset = (int) Math.round(r - Math.sqrt(r * r - dy * dy));
-                Gui.drawRect(x + inset, y + i, x + w - inset, y + i + 1, c);
-                Gui.drawRect(x + inset, y + h - i - 1, x + w - inset, y + h - i, c);
-            }
-            Gui.drawRect(x, y + r, x + w, y + h - r, c);
-        }
-
-        private static int lerpColor(int a, int b, float t) {
-            int ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
-            int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
-            int r = (int) (ar + (br - ar) * t);
-            int g = (int) (ag + (bg - ag) * t);
-            int bl = (int) (ab + (bb - ab) * t);
-            return 0xFF000000 | (r << 16) | (g << 8) | bl;
-        }
-
-        private static boolean in(int mx, int my, int x, int y, int w, int h) {
-            return mx >= x && mx < x + w && my >= y && my < y + h;
-        }
-
-        private boolean[] states() {
-            return new boolean[] { enabled, dynamicSprint, dynamicBow, dynamicEffect };
-        }
-
-        // ---------- geometria ----------
-        private int sliderX(int key) { return key == K_SMOOTH ? x0 + 178 : x0 + 12; }
-        private int sliderY(int key) { return key == K_SMOOTH ? y0 + 154 : y0 + 40 + key * 30; }
-        private int toggleX() { return x0 + 178 + SW - 26; }
-        private int toggleY(int i) { return i == 0 ? y0 + 9 : y0 + 40 + (i - 1) * 22; }
-        private int segX() { return x0 + 178; }
-        private int segY() { return y0 + 130; }
-
-        private int valueAt(int key, int mouseX) {
-            float f = (float) (mouseX - sliderX(key)) / (float) SW;
-            if (f < 0.0F) f = 0.0F;
-            if (f > 1.0F) f = 1.0F;
-            return Math.round(min(key) + f * (max(key) - min(key)));
+        private static String onOff(boolean b) {
+            return b ? "\u00a7aON" : "\u00a7cOFF";
         }
 
         @Override
         public void initGui() {
-            x0 = (this.width - W) / 2;
-            y0 = (this.height - H) / 2;
-            boolean[] st = states();
-            for (int i = 0; i < 4; i++) anim[i] = st[i] ? 1.0F : 0.0F;
-            lastMs = 0L;
+            int leftX = this.width / 2 - 154;
+            int rightX = this.width / 2 + 4;
+            int y0 = 36;
+            int step = 24;
+
+            // coluna da esquerda: sliders de FOV + botao de reset (R)
+            for (int i = 0; i <= K_SLOW; i++) {
+                sliders[i] = new FovSlider(200 + i, leftX, y0 + i * step, 130, i);
+                this.buttonList.add(sliders[i]);
+                this.buttonList.add(new GuiButton(100 + i, leftX + 134, y0 + i * step, 20, 20, "R"));
+            }
+
+            // coluna da direita: opcoes
+            btnEnabled = new GuiButton(10, rightX, y0, 150, 20, "");
+            btnSprint = new GuiButton(11, rightX, y0 + step, 150, 20, "");
+            btnBow = new GuiButton(12, rightX, y0 + step * 2, 150, 20, "");
+            btnEffect = new GuiButton(13, rightX, y0 + step * 3, 150, 20, "");
+            btnTransition = new GuiButton(14, rightX, y0 + step * 4, 150, 20, "");
+            this.buttonList.add(btnEnabled);
+            this.buttonList.add(btnSprint);
+            this.buttonList.add(btnBow);
+            this.buttonList.add(btnEffect);
+            this.buttonList.add(btnTransition);
+
+            sliders[K_SMOOTH] = new FovSlider(200 + K_SMOOTH, rightX, y0 + step * 5, 130, K_SMOOTH);
+            this.buttonList.add(sliders[K_SMOOTH]);
+            this.buttonList.add(new GuiButton(100 + K_SMOOTH, rightX + 134, y0 + step * 5, 20, 20, "R"));
+
+            // rodape
+            this.buttonList.add(new GuiButton(20, leftX, this.height - 28, 150, 20, "Reset All"));
+            this.buttonList.add(new GuiButton(21, rightX, this.height - 28, 150, 20, "Done"));
+
+            refresh();
+        }
+
+        private void refresh() {
+            btnEnabled.displayString = "FOV Changer: " + onOff(enabled);
+            btnSprint.displayString = "Dynamic Sprint: " + onOff(dynamicSprint);
+            btnBow.displayString = "Dynamic Bow: " + onOff(dynamicBow);
+            btnEffect.displayString = "Dynamic Status Effect: " + onOff(dynamicEffect);
+            btnTransition.displayString = "Transition: " + TYPE_NAMES[transition];
+            for (FovSlider s : sliders) {
+                if (s != null) s.sync();
+            }
+            sliders[K_SMOOTH].enabled = (transition == TYPE_SMOOTH);
         }
 
         @Override
-        public void drawScreen(int mx, int my, float partialTicks) {
-            // animacao dos toggles
-            long now = Minecraft.getSystemTime();
-            float dt = lastMs == 0L ? 0.0F : (now - lastMs) / 1000.0F;
-            lastMs = now;
-            boolean[] st = states();
-            for (int i = 0; i < 4; i++) {
-                anim[i] += ((st[i] ? 1.0F : 0.0F) - anim[i]) * Math.min(1.0F, dt * 16.0F);
-            }
-
-            // arrastar slider
-            if (dragging >= 0) {
-                if (Mouse.isButtonDown(0)) {
-                    set(dragging, valueAt(dragging, mx));
-                } else {
-                    dragging = -1;
-                    saveSettings();
-                }
-            }
-
-            // fundo escurecido + janela
-            Gui.drawRect(0, 0, this.width, this.height, 0x88000000);
-            rrect(x0 - 1, y0 - 1, W + 2, H + 2, 7, BORDER);
-            rrect(x0, y0, W, H, 6, BG);
-
-            // cabecalho
-            this.fontRendererObj.drawString("FOV Changer", x0 + 12, y0 + 10, 0xFFFFFFFF);
-            this.fontRendererObj.drawString("Plus", x0 + 12 + this.fontRendererObj.getStringWidth("FOV Changer ") , y0 + 10, ACCENT);
-            Gui.drawRect(x0, y0 + 28, x0 + W, y0 + 29, SEP);
-            String enLabel = enabled ? "Enabled" : "Disabled";
-            this.fontRendererObj.drawString(enLabel,
-                toggleX() - 8 - this.fontRendererObj.getStringWidth(enLabel), y0 + 11, enabled ? TEXT : TEXT_DIM);
-            drawToggle(toggleX(), toggleY(0), anim[0]);
-
-            // sliders da esquerda
-            for (int k = 0; k <= K_SLOW; k++) drawSlider(k, mx, my, true);
-
-            // coluna da direita: toggles
-            String[] tl = { "Dynamic Sprint", "Dynamic Bow", "Dynamic Status Effect" };
-            for (int i = 1; i <= 3; i++) {
-                int ty = toggleY(i);
-                this.fontRendererObj.drawString(tl[i - 1], x0 + 178, ty + 2, TEXT);
-                drawToggle(toggleX(), ty, anim[i]);
-            }
-
-            // transicao (controle segmentado)
-            this.fontRendererObj.drawString("Transition", x0 + 178, y0 + 118, TEXT_DIM);
-            rrect(segX(), segY(), SW, 18, 5, 0xFF262626);
-            for (int i = 0; i < 3; i++) {
-                int cx = segX() + i * 50;
-                boolean active = transition == i;
-                boolean hover = in(mx, my, cx, segY(), 50, 18);
-                if (active) rrect(cx + 1, segY() + 1, 48, 16, 4, ACCENT);
-                else if (hover) rrect(cx + 1, segY() + 1, 48, 16, 4, 0xFF333333);
-                int w = this.fontRendererObj.getStringWidth(TYPE_NAMES[i]);
-                this.fontRendererObj.drawString(TYPE_NAMES[i], cx + (50 - w) / 2, segY() + 5,
-                    active ? 0xFFFFFFFF : TEXT_DIM);
-            }
-
-            // slider do smooth (so ativo no modo Smooth)
-            drawSlider(K_SMOOTH, mx, my, transition == TYPE_SMOOTH);
-
-            // botoes
-            drawButton(x0 + 178, y0 + 192, 72, 20, "Reset All", false, mx, my);
-            drawButton(x0 + 256, y0 + 192, 72, 20, "Done", true, mx, my);
-
-            // dica
-            this.fontRendererObj.drawString("Right-click a slider to reset", x0 + 12, y0 + 206, 0xFF666666);
-        }
-
-        private void drawToggle(int x, int y, float a) {
-            rrect(x, y, 26, 12, 6, lerpColor(0xFF3A3A3A, ACCENT, a));
-            int kx = x + 2 + Math.round(a * 14.0F);
-            rrect(kx, y + 2, 8, 8, 4, 0xFFFFFFFF);
-        }
-
-        private void drawSlider(int key, int mx, int my, boolean active) {
-            int sx = sliderX(key);
-            int sy = sliderY(key);
-            int v = get(key);
-            float f = (v - min(key)) / (float) (max(key) - min(key));
-
-            String vs = String.valueOf(v);
-            if (key != K_SMOOTH) {
-                if (v == 70) vs += " (Normal)";
-                else if (v == 110) vs += " (Quake Pro)";
-            } else if (v == DEFAULT_SMOOTH) {
-                vs += " (Vanilla)";
-            }
-
-            this.fontRendererObj.drawString(LABELS[key], sx, sy, active ? TEXT : TEXT_OFF);
-            int vw = this.fontRendererObj.getStringWidth(vs);
-            this.fontRendererObj.drawString(vs, sx + SW - vw, sy, active ? TEXT_DIM : TEXT_OFF);
-
-            int ty = sy + 14;
-            rrect(sx, ty, SW, 4, 2, TRACK);
-            int fillW = Math.max(4, (int) (f * SW));
-            rrect(sx, ty, fillW, 4, 2, active ? ACCENT : 0xFF444444);
-
-            boolean hover = active && (dragging == key || in(mx, my, sx - 4, sy, SW + 8, 26));
-            int r = hover ? 6 : 5;
-            int kx = sx + (int) (f * SW);
-            rrect(kx - r, ty + 2 - r, r * 2, r * 2, r, active ? 0xFFFFFFFF : 0xFF777777);
-        }
-
-        private void drawButton(int x, int y, int w, int h, String label, boolean primary, int mx, int my) {
-            boolean hover = in(mx, my, x, y, w, h);
-            int c = primary ? (hover ? ACCENT_HOVER : ACCENT) : (hover ? 0xFF353535 : 0xFF2A2A2A);
-            rrect(x, y, w, h, 5, c);
-            int tw = this.fontRendererObj.getStringWidth(label);
-            this.fontRendererObj.drawString(label, x + (w - tw) / 2, y + (h - 8) / 2, 0xFFFFFFFF);
-        }
-
-        // ---------- input ----------
-        @Override
-        protected void mouseClicked(int mx, int my, int btn) {
-            if (btn != 0 && btn != 1) return;
-
-            // sliders
-            for (int k = 0; k <= K_SMOOTH; k++) {
-                if (k == K_SMOOTH && transition != TYPE_SMOOTH) continue;
-                if (in(mx, my, sliderX(k) - 4, sliderY(k), SW + 8, 26)) {
-                    if (btn == 1) {
-                        resetOne(k);
-                        saveSettings();
-                    } else {
-                        dragging = k;
-                        set(k, valueAt(k, mx));
-                    }
-                    return;
-                }
-            }
-            if (btn != 0) return;
-
-            // toggle principal
-            if (in(mx, my, toggleX() - 80, y0 + 4, 80 + 26, 20)) {
-                enabled = !enabled;
-                saveSettings();
-                return;
-            }
-            // toggles da direita
-            for (int i = 1; i <= 3; i++) {
-                if (in(mx, my, x0 + 178, toggleY(i) - 2, SW, 16)) {
-                    if (i == 1) dynamicSprint = !dynamicSprint;
-                    else if (i == 2) dynamicBow = !dynamicBow;
-                    else dynamicEffect = !dynamicEffect;
-                    saveSettings();
-                    return;
-                }
-            }
-            // transicao
-            if (in(mx, my, segX(), segY(), SW, 18)) {
-                int idx = (mx - segX()) / 50;
-                transition = Math.max(0, Math.min(2, idx));
-                saveSettings();
-                return;
-            }
-            // botoes
-            if (in(mx, my, x0 + 178, y0 + 192, 72, 20)) {
-                resetAll();
-                saveSettings();
-                return;
-            }
-            if (in(mx, my, x0 + 256, y0 + 192, 72, 20)) {
+        protected void actionPerformed(GuiButton b) throws IOException {
+            if (b.id == 10) enabled = !enabled;
+            else if (b.id == 11) dynamicSprint = !dynamicSprint;
+            else if (b.id == 12) dynamicBow = !dynamicBow;
+            else if (b.id == 13) dynamicEffect = !dynamicEffect;
+            else if (b.id == 14) transition = (transition + 1) % 3;
+            else if (b.id >= 100 && b.id <= 105) resetOne(b.id - 100);
+            else if (b.id == 20) resetAll();
+            else if (b.id == 21) {
                 saveSettings();
                 this.mc.displayGuiScreen(parent);
+                return;
             }
+            refresh();
+            saveSettings();
         }
 
         @Override
@@ -701,6 +612,14 @@ public class FovChangerMod {
                 return;
             }
             super.keyTyped(c, code);
+        }
+
+        @Override
+        public void drawScreen(int mouseX, int mouseY, float partialTicks) {
+            this.drawDefaultBackground();
+            this.drawCenteredString(this.fontRendererObj, "FOV Changer", this.width / 2, 14, 0xFFFFFF);
+            this.drawCenteredString(this.fontRendererObj, "R = reset to base FOV", this.width / 2, this.height - 42, 0xAAAAAA);
+            super.drawScreen(mouseX, mouseY, partialTicks);
         }
 
         @Override
