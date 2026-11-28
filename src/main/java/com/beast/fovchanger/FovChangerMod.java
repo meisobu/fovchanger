@@ -1,128 +1,90 @@
-package com.beast.hitparticles;
+package com.beast.fovmod;
 
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.particle.EffectRenderer;
-import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.ICommandSender;
-import net.minecraft.entity.Entity;
+import net.minecraft.init.Items;
+import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
-import net.minecraft.util.EnumParticleTypes;
-import net.minecraft.world.World;
 import net.minecraftforge.client.ClientCommandHandler;
+import net.minecraftforge.client.event.FOVUpdateEvent;
 import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.entity.player.AttackEntityEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.Mod.EventHandler;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-import net.minecraftforge.fml.common.gameevent.TickEvent;
 
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
+import java.util.List;
 import java.util.Properties;
 
 /**
- * HitParticles - client-side, Forge 1.8.9.
+ * FovMod - client-side, Forge 1.8.9.
  *
- * Comportamento: as particulas de hit (critico e sharpness) aparecem normalmente pelos primeiros
- * hits, depois somem por alguns segundos e voltam sozinhas. Nada alem disso e alterado.
+ * - O FOV normal e o do proprio Minecraft (slider das opcoes): 76 continua 76.
+ * - FOV de sprint: valor em graus. "reset" volta ao comportamento exato do vanilla.
+ * - Smooth: suaviza a transicao do FOV (sprint, poção de velocidade, voo), sem mexer no zoom do arco.
  *
- * Comando: /hitparticles [toggle | hits <n> | time <segundos>]
+ * Comando: /fovmod [sprint <graus|reset> | smooth <on|off>]
  */
-@Mod(modid = "hitparticles", name = "HitParticles", version = "1.0", clientSideOnly = true)
-public class HitParticlesMod {
+@Mod(modid = "fovmod", name = "FovMod", version = "1.0", clientSideOnly = true)
+public class FovMod {
 
-    // ==================== CONFIGURACOES ====================
-    public static boolean enabled = true;
-    public static int hitsBeforeHide = 5;      // quantos hits mostram particula antes de sumir
-    public static long hideMs = 3000L;         // quanto tempo ficam sumidas
-    private static final long RESET_MS = 3000L; // sem bater por esse tempo zera a contagem
+    // No vanilla, correr multiplica o FOV por 1.15 ((1.3 + 1) / 2)
+    private static final float VANILLA_SPRINT = 1.15F;
+    private static final float SMOOTH_FACTOR = 0.3F;
 
-    // ==================== ESTADO ====================
-    private static int hitCount = 0;
-    private static long lastHitMs = 0L;
-    private static long hiddenUntil = 0L;
+    // 0 = vanilla (reset)
+    public static float sprintFov = 0F;
+    public static boolean smooth = true;
+
+    private float smoothed = Float.NaN;
 
     private final Minecraft mc = Minecraft.getMinecraft();
-    private boolean installed = false;
 
     @EventHandler
     public void init(FMLInitializationEvent event) {
         loadSettings();
         MinecraftForge.EVENT_BUS.register(this);
-        ClientCommandHandler.instance.registerCommand(new HitCommand());
+        ClientCommandHandler.instance.registerCommand(new FovCommand());
     }
 
-    // Troca o EffectRenderer do jogo por uma versao que filtra so as particulas de hit.
-    // (feito 1x, no primeiro tick, quando o jogo ja terminou de carregar)
+    // Disparado 1x por tick com o multiplicador de FOV do jogador.
+    // O vanilla continua fazendo a animacao e a interpolacao por partialTicks depois disso.
     @SubscribeEvent
-    public void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || installed) return;
-        if (mc.effectRenderer == null) return;
-        mc.effectRenderer = new HitEffectRenderer(mc.theWorld, mc.getTextureManager());
-        installed = true;
-    }
+    public void onFov(FOVUpdateEvent event) {
+        if (event.entity != mc.thePlayer) return;
 
-    // Conta os SEUS hits. O evento e disparado antes das particulas serem criadas,
-    // entao o hit que ativa o "sumir" ja nasce sem particula.
-    @SubscribeEvent
-    public void onAttack(AttackEntityEvent event) {
-        if (!enabled || event.entityPlayer != mc.thePlayer) return;
+        float target = event.newfov;
+        float base = mc.gameSettings.fovSetting;
 
-        long now = System.currentTimeMillis();
-        if (now < hiddenUntil) return;                 // ja esta no periodo sumido
-        if (hiddenUntil != 0L) {                       // o periodo sumido acabou: recomeça
-            hiddenUntil = 0L;
-            hitCount = 0;
+        if (sprintFov > 0F && base > 0F && event.entity.isSprinting()) {
+            target *= sprintFov / (base * VANILLA_SPRINT);
         }
-        if (now - lastHitMs > RESET_MS) hitCount = 0;  // ficou um tempo sem bater
-        lastHitMs = now;
 
-        if (hitCount >= hitsBeforeHide) {
-            hiddenUntil = now + hideMs;                // some
-            hitCount = 0;
+        boolean bow = event.entity.isUsingItem()
+                && event.entity.getItemInUse() != null
+                && event.entity.getItemInUse().getItem() == Items.bow;
+
+        if (!smooth || bow || Float.isNaN(smoothed) || Float.isInfinite(smoothed)) {
+            smoothed = target;
         } else {
-            hitCount++;
-        }
-    }
-
-    // ==================== EFFECT RENDERER ====================
-    // Critico (CRIT) e sharpness (CRIT_MAGIC) sao criados por emitParticleAtEntity,
-    // tanto nos seus hits quanto nos de outros jogadores (pacote do servidor).
-    public static class HitEffectRenderer extends EffectRenderer {
-        public HitEffectRenderer(World world, TextureManager textures) {
-            super(world, textures);
+            smoothed += (target - smoothed) * SMOOTH_FACTOR;
         }
 
-        @Override
-        public void emitParticleAtEntity(Entity entity, EnumParticleTypes type) {
-            if (enabled
-                && (type == EnumParticleTypes.CRIT || type == EnumParticleTypes.CRIT_MAGIC)
-                && System.currentTimeMillis() < hiddenUntil) {
-                return; // particula escondida
-            }
-            super.emitParticleAtEntity(entity, type);
-        }
+        event.newfov = smoothed;
     }
 
     // ==================== CONFIG ====================
     private static File cfgFile;
 
-    private static int parseInt(String v, int min, int max, int def) {
-        try {
-            return Math.max(min, Math.min(max, Integer.parseInt(v.trim())));
-        } catch (Exception e) {
-            return def;
-        }
-    }
-
     private static void loadSettings() {
         try {
             File dir = new File(Minecraft.getMinecraft().mcDataDir, "config");
             if (!dir.exists()) dir.mkdirs();
-            cfgFile = new File(dir, "hitparticles.properties");
+            cfgFile = new File(dir, "fovmod.properties");
             if (!cfgFile.exists()) {
                 saveSettings();
                 return;
@@ -131,11 +93,10 @@ public class HitParticlesMod {
             try (FileReader r = new FileReader(cfgFile)) {
                 p.load(r);
             }
-            enabled = Boolean.parseBoolean(p.getProperty("enabled", "true"));
-            hitsBeforeHide = parseInt(p.getProperty("hits", "5"), 1, 50, 5);
-            hideMs = parseInt(p.getProperty("timeMs", "3000"), 500, 30000, 3000);
+            sprintFov = clampSprint(Float.parseFloat(p.getProperty("sprintFov", "0")));
+            smooth = Boolean.parseBoolean(p.getProperty("smooth", "true"));
         } catch (Exception e) {
-            System.err.println("[HitParticles] Load failed: " + e.getMessage());
+            System.err.println("[FovMod] Load failed: " + e.getMessage());
         }
     }
 
@@ -143,55 +104,109 @@ public class HitParticlesMod {
         if (cfgFile == null) return;
         try (FileWriter w = new FileWriter(cfgFile)) {
             Properties p = new Properties();
-            p.setProperty("enabled", String.valueOf(enabled));
-            p.setProperty("hits", String.valueOf(hitsBeforeHide));
-            p.setProperty("timeMs", String.valueOf(hideMs));
-            p.store(w, "HitParticles Config");
+            p.setProperty("sprintFov", String.valueOf(sprintFov));
+            p.setProperty("smooth", String.valueOf(smooth));
+            p.store(w, "FovMod Config");
         } catch (Exception e) {
-            // ignora
+            System.err.println("[FovMod] Save failed: " + e.getMessage());
         }
     }
 
-    // ==================== COMANDO ====================
-    public static class HitCommand extends CommandBase {
-        @Override public String getCommandName() { return "hitparticles"; }
-        @Override public String getCommandUsage(ICommandSender s) { return "/hitparticles [toggle|hits <n>|time <segundos>]"; }
-        @Override public boolean canCommandSenderUseCommand(ICommandSender s) { return true; }
+    private static float clampSprint(float v) {
+        if (v <= 0F) return 0F;
+        return Math.max(30F, Math.min(140F, v));
+    }
 
-        private void say(ICommandSender s, String msg) {
-            s.addChatMessage(new ChatComponentText("[HitParticles] " + msg));
+    // ==================== COMANDO ====================
+    public static class FovCommand extends CommandBase {
+
+        @Override
+        public String getCommandName() {
+            return "fovmod";
+        }
+
+        @Override
+        public String getCommandUsage(ICommandSender sender) {
+            return "/fovmod [sprint <graus|reset>] [smooth <on|off>]";
+        }
+
+        @Override
+        public boolean canCommandSenderUseCommand(ICommandSender sender) {
+            return true;
+        }
+
+        @Override
+        public int getRequiredPermissionLevel() {
+            return 0;
+        }
+
+        @Override
+        public List<String> addTabCompletionOptions(ICommandSender sender, String[] args, BlockPos pos) {
+            if (args.length == 1) {
+                return getListOfStringsMatchingLastWord(args, "sprint", "smooth");
+            }
+            if (args.length == 2) {
+                if ("sprint".equalsIgnoreCase(args[0])) {
+                    return getListOfStringsMatchingLastWord(args, "reset");
+                }
+                if ("smooth".equalsIgnoreCase(args[0])) {
+                    return getListOfStringsMatchingLastWord(args, "on", "off");
+                }
+            }
+            return null;
+        }
+
+        private static String fmt(float v) {
+            return String.format(java.util.Locale.US, "%.1f", v);
+        }
+
+        private void sendStatus(ICommandSender sender) {
+            float base = Minecraft.getMinecraft().gameSettings.fovSetting;
+            String sprint = sprintFov > 0F
+                    ? fmt(sprintFov)
+                    : fmt(base * VANILLA_SPRINT) + " (vanilla)";
+            sender.addChatMessage(new ChatComponentText(
+                    "[ fovmod ] : [ fov : " + fmt(base) + " ] [ sprint : " + sprint + " ] "
+                            + "[ smooth : " + (smooth ? "on" : "off") + " ]"));
         }
 
         @Override
         public void processCommand(ICommandSender sender, String[] args) {
             if (args.length == 0) {
-                say(sender, (enabled ? "ON" : "OFF") + " | hits: " + hitsBeforeHide
-                    + " | time: " + (hideMs / 1000.0) + "s");
+                sendStatus(sender);
                 return;
             }
+
             String cmd = args[0].toLowerCase();
-            if ("toggle".equals(cmd)) {
-                enabled = !enabled;
-                hiddenUntil = 0L;
-                hitCount = 0;
-                say(sender, enabled ? "ON" : "OFF");
-            } else if ("hits".equals(cmd) && args.length > 1) {
-                hitsBeforeHide = parseInt(args[1], 1, 50, hitsBeforeHide);
-                say(sender, "hits: " + hitsBeforeHide);
-            } else if ("time".equals(cmd) && args.length > 1) {
-                try {
-                    double sec = Double.parseDouble(args[1].replace(',', '.'));
-                    hideMs = (long) Math.max(500, Math.min(30000, sec * 1000.0));
-                    say(sender, "time: " + (hideMs / 1000.0) + "s");
-                } catch (NumberFormatException e) {
-                    say(sender, getCommandUsage(sender));
+
+            if ("sprint".equals(cmd) && args.length > 1) {
+                if ("reset".equalsIgnoreCase(args[1])) {
+                    sprintFov = 0F;
+                } else {
+                    try {
+                        float v = Float.parseFloat(args[1].replace(',', '.'));
+                        sprintFov = clampSprint(v);
+                    } catch (NumberFormatException e) {
+                        sender.addChatMessage(new ChatComponentText("/fovmod sprint <30-140|reset>"));
+                        return;
+                    }
+                }
+            } else if ("smooth".equals(cmd) && args.length > 1) {
+                if ("on".equalsIgnoreCase(args[1])) {
+                    smooth = true;
+                } else if ("off".equalsIgnoreCase(args[1])) {
+                    smooth = false;
+                } else {
+                    sender.addChatMessage(new ChatComponentText("/fovmod smooth <on|off>"));
                     return;
                 }
             } else {
-                say(sender, getCommandUsage(sender));
+                sendStatus(sender);
                 return;
             }
+
             saveSettings();
+            sendStatus(sender);
         }
     }
 }
