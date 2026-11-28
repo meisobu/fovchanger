@@ -1,4 +1,4 @@
-package com.beast.fovmod;
+package com.beast.fovchanger;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.command.CommandBase;
@@ -18,19 +18,21 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 /**
- * FovMod - client-side, Forge 1.8.9.
+ * FovChanger - client-side, Forge 1.8.9.
  *
  * - O FOV normal e o do proprio Minecraft (slider das opcoes): 76 continua 76.
  * - FOV de sprint: valor em graus. "reset" volta ao comportamento exato do vanilla.
- * - Smooth: suaviza a transicao do FOV (sprint, poção de velocidade, voo), sem mexer no zoom do arco.
+ * - Smooth: suaviza a transicao do FOV (sprint, pocao de velocidade, voo),
+ *   sem mexer no zoom do arco.
  *
- * Comando: /fovmod [sprint <graus|reset> | smooth <on|off>]
+ * Comando: /fovchanger [sprint <graus|reset> | smooth <on|off>]
  */
-@Mod(modid = "fovmod", name = "FovMod", version = "1.0", clientSideOnly = true)
-public class FovMod {
+@Mod(modid = "fovchanger", name = "FovChanger", version = "1.0", clientSideOnly = true)
+public class FovChangerMod {
 
     // No vanilla, correr multiplica o FOV por 1.15 ((1.3 + 1) / 2)
     private static final float VANILLA_SPRINT = 1.15F;
@@ -84,7 +86,7 @@ public class FovMod {
         try {
             File dir = new File(Minecraft.getMinecraft().mcDataDir, "config");
             if (!dir.exists()) dir.mkdirs();
-            cfgFile = new File(dir, "fovmod.properties");
+            cfgFile = new File(dir, "fovchanger.properties");
             if (!cfgFile.exists()) {
                 saveSettings();
                 return;
@@ -96,7 +98,7 @@ public class FovMod {
             sprintFov = clampSprint(Float.parseFloat(p.getProperty("sprintFov", "0")));
             smooth = Boolean.parseBoolean(p.getProperty("smooth", "true"));
         } catch (Exception e) {
-            System.err.println("[FovMod] Load failed: " + e.getMessage());
+            System.err.println("[FovChanger] Load failed: " + e.getMessage());
         }
     }
 
@@ -106,9 +108,9 @@ public class FovMod {
             Properties p = new Properties();
             p.setProperty("sprintFov", String.valueOf(sprintFov));
             p.setProperty("smooth", String.valueOf(smooth));
-            p.store(w, "FovMod Config");
+            p.store(w, "FovChanger Config");
         } catch (Exception e) {
-            System.err.println("[FovMod] Save failed: " + e.getMessage());
+            System.err.println("[FovChanger] Save failed: " + e.getMessage());
         }
     }
 
@@ -122,12 +124,12 @@ public class FovMod {
 
         @Override
         public String getCommandName() {
-            return "fovmod";
+            return "fovchanger";
         }
 
         @Override
         public String getCommandUsage(ICommandSender sender) {
-            return "/fovmod [sprint <graus|reset>] [smooth <on|off>]";
+            return "/fovchanger [sprint <graus|reset>] [smooth <on|off>]";
         }
 
         @Override
@@ -157,7 +159,7 @@ public class FovMod {
         }
 
         private static String fmt(float v) {
-            return String.format(java.util.Locale.US, "%.1f", v);
+            return String.format(Locale.US, "%.1f", v);
         }
 
         private void sendStatus(ICommandSender sender) {
@@ -166,7 +168,7 @@ public class FovMod {
                     ? fmt(sprintFov)
                     : fmt(base * VANILLA_SPRINT) + " (vanilla)";
             sender.addChatMessage(new ChatComponentText(
-                    "[ fovmod ] : [ fov : " + fmt(base) + " ] [ sprint : " + sprint + " ] "
+                    "[ fovchanger ] : [ fov : " + fmt(base) + " ] [ sprint : " + sprint + " ] "
                             + "[ smooth : " + (smooth ? "on" : "off") + " ]"));
         }
 
@@ -187,7 +189,7 @@ public class FovMod {
                         float v = Float.parseFloat(args[1].replace(',', '.'));
                         sprintFov = clampSprint(v);
                     } catch (NumberFormatException e) {
-                        sender.addChatMessage(new ChatComponentText("/fovmod sprint <30-140|reset>"));
+                        sender.addChatMessage(new ChatComponentText("/fovchanger sprint <30-140|reset>"));
                         return;
                     }
                 }
@@ -197,7 +199,7 @@ public class FovMod {
                 } else if ("off".equalsIgnoreCase(args[1])) {
                     smooth = false;
                 } else {
-                    sender.addChatMessage(new ChatComponentText("/fovmod smooth <on|off>"));
+                    sender.addChatMessage(new ChatComponentText("/fovchanger smooth <on|off>"));
                     return;
                 }
             } else {
