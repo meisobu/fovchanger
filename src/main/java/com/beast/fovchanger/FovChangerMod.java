@@ -31,7 +31,7 @@ import java.util.Properties;
  *
  * Comando: /fovchanger [sprint <graus|reset> | smooth <on|off>]
  */
-@Mod(modid = "fovchanger", name = "FovChanger", version = "1.0", clientSideOnly = true)
+@Mod(modid = "fovchangerfast", name = "FovChanger", version = "1.0", clientSideOnly = true)
 public class FovChangerMod {
 
     // No vanilla, correr multiplica o FOV por 1.15 ((1.3 + 1) / 2)
